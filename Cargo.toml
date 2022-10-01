@@ -1,0 +1,9 @@
+[package]
+name = "incremental-command"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mio = { version = "0.8.4", features = ["os-poll", "os-ext"] }
+duct = "0.13.5"
+os_pipe = "1.0.1"
