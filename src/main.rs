@@ -1,10 +1,11 @@
 use std::{
     collections::VecDeque,
+    fs::File,
     io::{self, Read},
-    process::ExitStatus,
+    os::unix::prelude::{AsRawFd, FromRawFd},
+    process::{Child, Command, ExitStatus},
 };
 
-use duct::{Expression, Handle};
 use mio::{unix::pipe::Receiver, Events, Interest, Token};
 
 const PYTHON: &str = r#"\
@@ -36,7 +37,7 @@ enum Stream {
 }
 
 struct ProcessReader {
-    child: Handle,
+    child: Child,
 
     stdout_read: Receiver,
     stderr_read: Receiver,
@@ -51,14 +52,14 @@ struct ProcessReader {
 }
 
 impl ProcessReader {
-    pub fn start(expr: Expression) -> Result<Self, io::Error> {
+    pub fn start(mut cmd: Command) -> Result<Self, io::Error> {
         let (stdout_write, mut stdout_read) = mio::unix::pipe::new()?;
         let (stderr_write, mut stderr_read) = mio::unix::pipe::new()?;
 
-        let child = expr
-            .stdout_file(stdout_write)
-            .stderr_file(stderr_write)
-            .start()?;
+        let stdout_file = unsafe { File::from_raw_fd(stdout_write.as_raw_fd()) };
+        let stderr_file = unsafe { File::from_raw_fd(stderr_write.as_raw_fd()) };
+
+        let child = cmd.stdout(stdout_file).stderr(stderr_file).spawn()?;
 
         let poll = mio::Poll::new()?;
         let events = Events::with_capacity(128);
@@ -176,9 +177,9 @@ impl Iterator for ProcessReader {
             }
 
             match self.child.try_wait() {
-                Ok(Some(output)) => {
+                Ok(Some(status)) => {
                     self.done = true;
-                    return Some(Ok(Out::Done(output.status)));
+                    return Some(Ok(Out::Done(status)));
                 }
                 Ok(None) => continue,
                 Err(err) => return Some(Err(err)),
@@ -188,8 +189,9 @@ impl Iterator for ProcessReader {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let expr = duct::cmd!("python3", "-u", "-c", PYTHON);
-    let reader = ProcessReader::start(expr)?;
+    let mut cmd = Command::new("python3");
+    cmd.args(["-u", "-c", PYTHON]);
+    let reader = ProcessReader::start(cmd)?;
 
     for line in reader {
         println!("{line:?}");
